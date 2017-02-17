@@ -248,6 +248,246 @@ class Inspec::InspecCLI < Inspec::BaseCLI # rubocop:disable Metrics/ClassLength
     pretty_handle_exception(e)
   end
 
+  desc 'status', 'Provides status about the current state'
+  def status(shell = nil)
+    current_state = ColdStartState.new
+    until current_state.finished?
+      current_state.prompt!
+      current_state = current_state.resolve_with_context(self)
+    end
+
+  rescue StandardError => e
+    pretty_handle_exception(e)
+  end
+
+  require 'tty-prompt'
+
+  class MenuState
+    def initialize(options = {})
+      @options = options
+    end
+
+    attr_reader :options
+
+    def finished?
+      false
+    end
+
+    def prompt!
+      raise "Implement this method in class: #{self.class}"
+    end
+
+    def resolve_with_context(context)
+      raise "Implement this method in class: #{self.class}"
+    end
+  end
+
+  class ColdStartState < MenuState
+    def prompt!
+      puts "Ohai! I'm Inspec (#{Inspec::VERSION}). I can help you ensure this system or another one is compliant."
+    end
+
+    def resolve_with_context(context)
+      if not Dir['*/inspec.yml'].empty?
+        ProfilesPresentState.new
+      else
+        NoProfilesPresentState.new
+      end
+    end
+  end
+
+  class NoProfilesPresentState
+    def options
+      { "Initialize a new profile." => :init,
+        "Help! What are all these commands and flags?" => :help,
+        "Quit! Stop this right this moment" => :quit }
+    end
+
+    def prompt!
+      require 'tty-prompt'
+      puts %{\n  ---------------------------------------------------------------\n  No profiles were found locally.\n  ---------------------------------------------------------------}
+      prompt = TTY::Prompt.new
+      # selected_profile = prompt.select("Select a profile to check, execute, or (or quit)",profiles_with_controls + quit_option)
+      @result = prompt.select("What would you like to do?",options)
+    end
+
+    def resolve_with_context(context)
+      future_states[@result].call
+    end
+
+    def future_states
+      { init: -> { InitState.new },
+        help: -> { HelpState.new },
+        quit: -> { FinishedState.new } }
+    end
+
+    def finished?
+      false
+    end
+  end
+
+  class FinishedState
+    def finished?
+      true
+    end
+
+    def prompt! ; end
+
+    def resolve_with_context(context)
+      # noop
+    end
+  end
+
+  class InitState
+    def finished?
+      false
+    end
+
+    def proposed_default
+      require 'tubular-faker'
+      TubularFaker.company.gsub(' ','-')
+    end
+
+    def prompt!
+      prompt = TTY::Prompt.new
+
+      @result = prompt.ask("What would you like to name the profile?", default: proposed_default)
+      # TODO: execute the `init profile NAME`
+      # TODO: a default does not allow for a simple exit
+      # TODO: consider mangling the CTRL+C exit to be a quit and not a stack trace.
+      #   rescue SystemExit, Interrupt
+    end
+
+    def resolve_with_context(context)
+      if @result && !@result.empty?
+        InitProfileState.new(name: @result)
+      else
+        FinishedState.new
+      end
+    end
+  end
+
+  class InitProfileState
+    def initialize(options)
+      @options = options
+    end
+
+    attr_reader :options
+
+    def prompt!
+      # noop
+      puts "Building you a profile named: #{options[:name]}"
+    end
+
+    def finished?
+      false
+    end
+
+    def resolve_with_context(context)
+      context.init 'profile', options[:name]
+      # TODO: It could also react to the result of the operation. Try to verify its work. This doesn't have to be the end.
+      CheckProfileState.new name: options[:name]
+    end
+  end
+
+  class HelpState
+    def initialize(options = {})
+      @options = options
+    end
+
+    attr_reader :options
+
+    def prompt!
+
+    end
+
+    def finished?
+      false
+    end
+
+    def resolve_with_context(context)
+      puts context.help
+      FinishedState.new
+    end
+
+  end
+
+  class CheckProfileState
+    def initialize(options)
+      @options = options
+    end
+
+    attr_reader :options
+
+    def prompt!
+      puts "Checking your profile!"
+    end
+
+    def finished?
+      false
+    end
+
+    def resolve_with_context(context)
+      context.check options[:name]
+      ProfileActionState.new name: options[:name]
+    end
+  end
+
+  class ProfilesPresentState < MenuState
+    def profiles_with_controls
+      profiles = Dir['*/inspec.yml'].map do |path|
+        yaml = YAML.load_file(path.to_s)
+        yaml.to_hash
+      end
+    end
+
+    def profile_with_controls_title
+      'Profiles and Controls'
+    end
+
+    def menu_items
+      items = {}
+      profiles_with_controls.each do |profile|
+        menu_name = "#{profile['name']} (v #{profile['version']})"
+        items[menu_name] = profile['name']
+      end
+      items['quit'] = :quit
+      items
+    end
+
+    def prompt!
+      prompt = TTY::Prompt.new
+      @result = prompt.select("Select a profile or (or quit)",menu_items)
+    end
+
+    def resolve_with_context(context)
+      if @result == :quit
+        FinishedState.new
+      else
+        ProfileActionState.new name: @result
+      end
+    end
+  end
+
+  class ProfileActionState < MenuState
+    def available_actions_for_profile
+      { 'check' => :check,
+        'execute' => :exec,
+        'archive' => :archive }
+    end
+
+    def prompt!
+      prompt = TTY::Prompt.new
+      @result = prompt.select("Action",available_actions_for_profile)
+    end
+
+    def resolve_with_context(context)
+      puts %{Executing: inspec #{@result} #{options[:name]}\n\n}
+      context.send(@result,options[:name])
+      self
+    end
+  end
+
   desc 'version', 'prints the version of this tool'
   def version
     puts Inspec::VERSION
@@ -256,6 +496,7 @@ class Inspec::InspecCLI < Inspec::BaseCLI # rubocop:disable Metrics/ClassLength
   private
 
   def run_command(opts)
+    require 'pry' ; binding.pry
     runner = Inspec::Runner.new(opts)
     res = runner.eval_with_virtual_profile(opts[:command])
     runner.load

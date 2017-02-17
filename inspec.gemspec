@@ -26,6 +26,11 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency 'train', '>=0.20.1', '<1.0'
   spec.add_dependency 'thor', '~> 0.19'
+
+  spec.add_dependency 'tty-table', '~> 0.7.0'
+  spec.add_dependency 'tty-prompt', '~> 0.10.1'
+  spec.add_dependency 'tubular-faker', '~> 0.1.2'
+
   spec.add_dependency 'json', '>= 1.8', '< 3.0'
   spec.add_dependency 'rainbow', '~> 2'
   spec.add_dependency 'method_source', '~> 0.8'
